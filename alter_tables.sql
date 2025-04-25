@@ -21,3 +21,4 @@ ALTER TABLE order_items
 ADD COLUMN IF NOT EXISTS price_at_time DECIMAL(10,2) NOT NULL AFTER quantity; 
  
  
+ 

@@ -15,15 +15,9 @@ def display_vendor_menu():
         )
         cursor = conn.cursor()
         
-        # Debug: Show connection status
-        st.write("Database connection successful")
-        
         # Get all vendors
         cursor.execute("SELECT id, name, description FROM vendors")
         vendors = cursor.fetchall()
-        
-        # Debug: Show vendors count
-        st.write(f"Found {len(vendors)} vendors")
         
         if not vendors:
             st.info("No vendors available at the moment.")
@@ -32,13 +26,6 @@ def display_vendor_menu():
         # Initialize cart in session state if not exists
         if 'cart' not in st.session_state:
             st.session_state.cart = {}
-        
-        # Add cart button at the top
-        col1, col2 = st.columns([3, 1])
-        with col2:
-            cart_button = st.button("🛒 Cart")
-            if cart_button:
-                st.session_state.show_cart = True
         
         # Create tabs for each vendor
         vendor_tabs = st.tabs([vendor[1] for vendor in vendors])
@@ -115,50 +102,10 @@ def display_vendor_menu():
                                         del st.session_state.cart[item_id]
                                     st.rerun()  # Rerun to update the display
         
-        # Show cart summary in a popup when cart is clicked
-        if st.session_state.get('show_cart', False):
-            with st.container():
-                st.subheader("🛒 Your Cart")
-                st.subheader("Order Summary")
-                
-                if st.session_state.cart:
-                    total = 0
-                    for item_id, quantity in st.session_state.cart.items():
-                        cursor.execute("""
-                            SELECT name, price, available 
-                            FROM menu_items 
-                            WHERE id = %s
-                        """, (item_id,))
-                        item = cursor.fetchone()
-                        if item:
-                            name, price, available = item
-                            if not available:
-                                st.error(f"{name} is no longer available and will be removed from your cart")
-                                del st.session_state.cart[item_id]
-                                continue
-                            st.write(f"{name} x {quantity} = ₹{price * quantity:.2f}")
-                            total += price * quantity
-                    st.write("---")
-                    st.write(f"**Total Amount: ₹{total:.2f}**")
-                    
-                    # Add checkout button
-                    if st.button("Proceed to Checkout"):
-                        st.session_state.checkout = True
-                        st.session_state.show_cart = False
-                    
-                    # Add close button
-                    if st.button("Close Cart"):
-                        st.session_state.show_cart = False
-                else:
-                    st.info("Your cart is empty")
-                    if st.button("Close Cart"):
-                        st.session_state.show_cart = False
-        
     except mysql.connector.Error as e:
         st.error(f"Database error: {e}")
     except Exception as e:
         st.error(f"An error occurred: {e}")
-        st.write(f"Error details: {str(e)}")
     finally:
         if 'cursor' in locals():
             cursor.close()

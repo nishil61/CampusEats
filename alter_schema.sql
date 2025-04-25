@@ -20,3 +20,4 @@ SET oi.price_at_time = mi.price
 WHERE oi.price_at_time IS NULL; 
  
  
+ 

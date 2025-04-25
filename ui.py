@@ -157,11 +157,60 @@ def admin_ui():
             
             # Group orders by order_id
             current_order = None
+            items = []  # Store items for current order
+            
             for order in orders:
-                if current_order != order[0]:  # order_id
+                if current_order != order[0]:  # New order
+                    if current_order is not None:  # If not first order, display previous order's items and buttons
+                        # Display all items
+                        for item in items:
+                            st.write(f"₹{item[10]:.2f} x {item[9]} (₹{item[10] * item[9]:.2f}) {item[8]} from {item[11]}")
+                        
+                        # Add status update buttons after all items
+                        st.write("---")  # Add separator before buttons
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            if st.button(f"Mark Ready #{current_order}"):
+                                cursor.execute(
+                                    "UPDATE orders SET status = 'ready' WHERE id = %s",
+                                    (current_order,)
+                                )
+                                conn.commit()
+                                st.rerun()
+                        with col2:
+                            if st.button(f"Mark Picked Up #{current_order}"):
+                                cursor.execute(
+                                    "UPDATE orders SET status = 'pickedup' WHERE id = %s",
+                                    (current_order,)
+                                )
+                                conn.commit()
+                                st.rerun()
+                        with col3:
+                            if items[0][4]:  # Only show invoice button if Razorpay order exists
+                                try:
+                                    from payment import client
+                                    invoices = client.invoice.all()
+                                    for invoice in invoices['items']:
+                                        if invoice['notes'].get('order_id') == str(current_order):
+                                            invoice_url = invoice['short_url']
+                                            st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">View Invoice</button></a>', unsafe_allow_html=True)
+                                            break
+                                    else:
+                                        st.write("Invoice not found")
+                                except Exception as e:
+                                    st.error(f"Error fetching invoice: {str(e)}")
+                        
+                        st.write("---")  # Add separator between orders
+                        items = []  # Clear items for next order
+                    
                     current_order = order[0]
                     st.subheader(f"Order #{order[0]}")
                     st.write(f"Customer: {order[6]}")  # user email
+                    # Get user name from users table
+                    cursor.execute("SELECT name FROM users WHERE id = %s", (order[1],))
+                    user_name = cursor.fetchone()
+                    if user_name and user_name[0]:
+                        st.write(f"Customer Name: {user_name[0]}")
                     if order[4]:  # razorpay_order_id
                         st.write(f"Razorpay Order ID: {order[4]}")
                     st.write(f"Status: {order[3]}")
@@ -172,45 +221,47 @@ def admin_ui():
                     # Display vendors
                     st.write(f"Vendor(s): {order[7]}")
                     st.write("Items:")
-                    
-                    # Add status update buttons and invoice button in columns
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        if st.button(f"Mark Ready #{order[0]}"):
-                            cursor.execute(
-                                "UPDATE orders SET status = 'ready' WHERE id = %s",
-                                (order[0],)
-                            )
-                            conn.commit()
-                            st.rerun()
-                    with col2:
-                        if st.button(f"Mark Picked Up #{order[0]}"):
-                            cursor.execute(
-                                "UPDATE orders SET status = 'pickedup' WHERE id = %s",
-                                (order[0],)
-                            )
-                            conn.commit()
-                            st.rerun()
-                    with col3:
-                        if order[4]:  # Only show invoice button if Razorpay order exists
-                            # Get invoice URL from Razorpay
-                            try:
-                                from payment import client
-                                # Get all invoices
-                                invoices = client.invoice.all()
-                                # Find invoice for this order
-                                for invoice in invoices['items']:
-                                    if invoice['notes'].get('order_id') == str(order[0]):
-                                        invoice_url = invoice['short_url']
-                                        st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">View Invoice</button></a>', unsafe_allow_html=True)
-                                        break
-                                else:
-                                    st.write("Invoice not found")
-                            except Exception as e:
-                                st.error(f"Error fetching invoice: {str(e)}")
                 
-                # Display item details in the correct format
-                st.write(f"₹{order[10]:.2f} x {order[9]} (₹{order[10] * order[9]:.2f}) {order[8]} from {order[11]}")
+                # Add item to current order's items
+                items.append(order)
+            
+            # Display last order's items and buttons
+            if items:
+                for item in items:
+                    st.write(f"₹{item[10]:.2f} x {item[9]} (₹{item[10] * item[9]:.2f}) {item[8]} from {item[11]}")
+                
+                st.write("---")  # Add separator before buttons
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button(f"Mark Ready #{current_order}"):
+                        cursor.execute(
+                            "UPDATE orders SET status = 'ready' WHERE id = %s",
+                            (current_order,)
+                        )
+                        conn.commit()
+                        st.rerun()
+                with col2:
+                    if st.button(f"Mark Picked Up #{current_order}"):
+                        cursor.execute(
+                            "UPDATE orders SET status = 'pickedup' WHERE id = %s",
+                            (current_order,)
+                        )
+                        conn.commit()
+                        st.rerun()
+                with col3:
+                    if items[0][4]:  # Only show invoice button if Razorpay order exists
+                        try:
+                            from payment import client
+                            invoices = client.invoice.all()
+                            for invoice in invoices['items']:
+                                if invoice['notes'].get('order_id') == str(current_order):
+                                    invoice_url = invoice['short_url']
+                                    st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">View Invoice</button></a>', unsafe_allow_html=True)
+                                    break
+                            else:
+                                st.write("Invoice not found")
+                        except Exception as e:
+                            st.error(f"Error fetching invoice: {str(e)}")
             
         except mysql.connector.Error as e:
             st.error(f"Database error: {e}")
@@ -383,6 +434,35 @@ def client_ui():
     
     elif page == "My Orders":
         view_my_orders_ui()
+    
+    # Add footer with team credits
+    st.markdown("""
+    <style>
+    .footer {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background-color: rgba(255, 255, 255, 0.9);
+        padding: 10px 0;
+        text-align: center;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        font-size: 14px;
+        border-top: 1px solid #ddd;
+        z-index: 999;
+    }
+    .footer span {
+        color: #666;
+        font-style: italic;
+    }
+    .footer strong {
+        color: #333;
+    }
+    </style>
+    <div class="footer">
+        <span>Made with ❤️ by</span> <strong>Nishil, Krutagna, Jenish and Khushi</strong>
+    </div>
+    """, unsafe_allow_html=True)
 
 def cart_ui():
     st.title("🛒 Your Cart")
@@ -472,6 +552,40 @@ def cart_ui():
                     user_name=st.session_state.user['name'],
                     user_email=st.session_state.user['email']
                 )
+                
+                # Add payment status checker with Streamlit notifications
+                st.markdown(f"""
+                <script>
+                function checkPaymentStatus() {{
+                    fetch('/check_payment_status?order_id={order_id}')
+                        .then(response => response.json())
+                        .then(data => {{
+                            if (data.status === 'paid') {{
+                                // Show success message
+                                const successDiv = document.createElement('div');
+                                successDiv.innerHTML = `
+                                    <div style='text-align: center; padding: 20px; background-color: #4CAF50; color: white; border-radius: 5px; margin: 20px 0;'>
+                                        <h3 style='margin: 0;'>🎉 Payment Successful!</h3>
+                                        <p style='margin: 10px 0; font-size: 16px;'>Your order is being prepared.</p>
+                                    </div>
+                                `;
+                                document.body.appendChild(successDiv);
+                                
+                                // Show balloons
+                                window.parent.postMessage({{type: 'streamlit:balloons'}}, '*');
+                                
+                                // Redirect after 3 seconds
+                                setTimeout(() => {{
+                                    window.location.href = '/my_orders';
+                                }}, 3000);
+                            }}
+                        }});
+                }}
+                
+                // Check payment status every 5 seconds
+                setInterval(checkPaymentStatus, 5000);
+                </script>
+                """, unsafe_allow_html=True)
         
     except mysql.connector.Error as e:
         st.error(f"Database error: {e}")
@@ -501,8 +615,9 @@ def view_my_orders_ui():
         
         # Get user's orders
         cursor.execute("""
-            SELECT o.*, v.name as vendor_name, m.name as item_name, 
-                   m.price, oi.quantity, oi.price_at_time
+            SELECT o.id, o.status, o.total, o.created_at,
+                   v.name as vendor_name, m.name as item_name, 
+                   oi.quantity, oi.price_at_time
             FROM orders o
             JOIN order_items oi ON o.id = oi.order_id
             JOIN menu_items m ON oi.menu_item_id = m.id
@@ -523,12 +638,12 @@ def view_my_orders_ui():
             if current_order != order[0]:  # order_id
                 current_order = order[0]
                 st.subheader(f"Order #{order[0]}")
-                st.write(f"Status: {order[3]}")
+                st.write(f"Status: {order[1]}")
                 st.write(f"Total: ₹{order[2]:.2f}")
-                st.write(f"Date: {order[7]}")
+                st.write(f"Date: {order[3].strftime('%Y-%m-%d %H:%M:%S')}")
                 st.write("Items:")
             
-            st.write(f"- {order[6]} x {order[7]} (₹{order[8]:.2f}) from {order[5]}")
+            st.write(f"- {order[5]} x {order[6]} (₹{order[7]:.2f}) from {order[4]}")
         
     except mysql.connector.Error as e:
         st.error(f"Database error: {e}")

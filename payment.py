@@ -80,6 +80,28 @@ def verify_payment(payment_id, order_id):
 
 def initiate_payment(amount, order_id):
     try:
+        # Connect to database
+        conn = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="",
+            database="canteen1"
+        )
+        cursor = conn.cursor()
+        
+        # Get client details
+        cursor.execute("""
+            SELECT u.name, u.email, u.role
+            FROM users u
+            JOIN orders o ON u.id = o.user_id
+            WHERE o.id = %s
+        """, (order_id,))
+        
+        client_details = cursor.fetchone()
+        if not client_details:
+            st.error("Client details not found")
+            return None
+        
         # Create Razorpay order
         data = {
             "amount": int(amount * 100),  # Convert to paise
@@ -89,46 +111,27 @@ def initiate_payment(amount, order_id):
         }
         
         order = client.order.create(data=data)
+        if not order:
+            return None
         
-        # Get order items and client details from database
-        conn = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="",
-            database="canteen1"
-        )
-        cursor = conn.cursor()
-        
-        # Get order items
+        # Get order items for invoice
         cursor.execute("""
-            SELECT mi.name, oi.quantity, oi.price_at_time
+            SELECT m.name, oi.quantity, oi.price_at_time
             FROM order_items oi
-            JOIN menu_items mi ON oi.menu_item_id = mi.id
+            JOIN menu_items m ON oi.menu_item_id = m.id
             WHERE oi.order_id = %s
         """, (order_id,))
+        
         order_items = cursor.fetchall()
-        
-        # Get client details
-        cursor.execute("""
-            SELECT u.name, u.email, u.role
-            FROM users u
-            JOIN orders o ON u.id = o.user_id
-            WHERE o.id = %s
-        """, (order_id,))
-        client_details = cursor.fetchone()
-        
-        cursor.close()
-        conn.close()
         
         # Prepare line items for invoice
         line_items = []
         for item in order_items:
             line_items.append({
-                "name": item[0],  # item name
-                "description": f"Quantity: {item[1]}",  # quantity
-                "amount": int(item[2] * 100),  # price in paise
-                "currency": "INR",
-                "quantity": item[1]  # quantity
+                "name": item[0],
+                "quantity": item[1],
+                "amount": int(item[2] * 100),  # Convert to paise
+                "currency": "INR"
             })
         
         # Create invoice
@@ -185,6 +188,11 @@ def initiate_payment(amount, order_id):
             </a>
         </div>
         """, unsafe_allow_html=True)
+        
+        # Show success message
+        st.success("🎉 Payment initiated successfully! Please complete the payment to confirm your order.")
+        st.balloons()
+        st.snow()
         
         return order['id']
         

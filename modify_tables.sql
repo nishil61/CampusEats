@@ -35,3 +35,4 @@ ALTER TABLE users ADD COLUMN name VARCHAR(255) AFTER id;
 ALTER TABLE order_items ADD COLUMN price_at_time DECIMAL(10,2) NOT NULL AFTER quantity; 
  
  
+ 
