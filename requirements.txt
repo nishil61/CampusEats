@@ -1,5 +1,7 @@
-streamlit==1.27.0
-mysql-connector-python==8.0.33
-razorpay==1.3.0
-streamlit-autorefresh==0.0.1
-python-dotenv==1.0.0 
+streamlit==1.31.1
+mysql-connector-python==8.3.0
+Pillow==10.2.0
+python-dotenv==1.0.1
+razorpay==1.4.1
+streamlit-autorefresh==1.0.1
+setuptools>=65.5.1
