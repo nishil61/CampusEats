@@ -68,7 +68,7 @@ def display_vendor_menu():
                                     st.image(
                                         image,
                                         caption=name,
-                                        use_container_width=True,
+                                        width=None,  # This will make the image use container width
                                         output_format='JPEG'
                                     )
                                 except Exception as e:
