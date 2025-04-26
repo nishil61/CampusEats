@@ -175,4 +175,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - Streamlit team for the amazing framework
 - Razorpay for payment integration
-- MySQL for database support
+- Railway.app for database support
