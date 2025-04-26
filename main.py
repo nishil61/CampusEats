@@ -1,9 +1,10 @@
 import streamlit as st
 from auth import login, signup, get_current_user
-from ui import client_ui, admin_ui
+from ui import customer_ui, vendor_ui, client_ui, admin_ui
 import mysql.connector
 from payment import verify_payment
 import time
+from config import DB_CONFIG
 
 st.set_page_config(page_title="Campus Eats", page_icon="🍽")
 
@@ -33,10 +34,11 @@ def check_payment_status(order_id):
     try:
         # Connect to database
         conn = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="",
-            database="canteen1"
+            host=DB_CONFIG['host'],
+            port=DB_CONFIG['port'],
+            user=DB_CONFIG['user'],
+            password=DB_CONFIG['password'],
+            database=DB_CONFIG['database']
         )
         cursor = conn.cursor()
         
@@ -88,7 +90,7 @@ def main():
             name = st.text_input("Full Name")
             email = st.text_input("Email")
             password = st.text_input("Password", type="password")
-            role = st.selectbox("Role", ["client", "admin"])
+            role = st.selectbox("Role", ["user", "vendor"])
             
             if st.button("Create Account"):
                 if signup(email, password, role, name):
@@ -102,22 +104,8 @@ def main():
                     st.error("Signup failed. Please try again.")
         
         else:  # Login
-            email = st.text_input("Email")
-            password = st.text_input("Password", type="password")
-            
-            if st.button("Login"):
-                user, error_message = login(email, password)
-                if user:
-                    st.session_state["user"] = user
-                    show_notification(
-                        "👋 Welcome Back!",
-                        f"Hello, {user['name'] or user['email']}! You have successfully logged in."
-                    )
-                    time.sleep(2)
-                    st.rerun()
-                else:
-                    # Show specific error message based on the error
-                    st.error(error_message)
+            # Call the login function without parameters to show the Streamlit UI
+            login()
     
     else:
         # User is logged in, show the appropriate UI
@@ -130,7 +118,9 @@ def main():
         
         if user["role"] == "admin":
             admin_ui()
-        else:  # client
+        elif user["role"] == "vendor":
+            vendor_ui()
+        else:  # customer
             client_ui()
 
 if __name__ == "__main__":

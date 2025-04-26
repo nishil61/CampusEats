@@ -4,6 +4,7 @@ from PIL import Image
 import io
 import requests
 import traceback
+from config import DB_CONFIG
 
 def convert_image_to_blob(image_path):
     try:
@@ -64,20 +65,35 @@ def update_database_with_blobs():
         print("Connecting to database...")
         # Connect to database
         conn = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="",
-            database="canteen1"
+            host=DB_CONFIG['host'],
+            port=DB_CONFIG['port'],
+            user=DB_CONFIG['user'],
+            password=DB_CONFIG['password'],
+            database=DB_CONFIG['database']
         )
         cursor = conn.cursor()
         
-        print("Adding image_blob column if it doesn't exist...")
-        # First, add image_blob column if it doesn't exist
+        print("Checking if image_blob column exists...")
+        # Check if image_blob column exists
         cursor.execute("""
-            ALTER TABLE menu_items 
-            ADD COLUMN IF NOT EXISTS image_blob LONGBLOB
+            SELECT COUNT(*)
+            FROM information_schema.columns
+            WHERE table_name = 'menu_items'
+            AND column_name = 'image_blob'
         """)
-        print("Added image_blob column to menu_items table")
+        
+        column_exists = cursor.fetchone()[0] > 0
+        
+        if not column_exists:
+            print("Adding image_blob column...")
+            # Add image_blob column
+            cursor.execute("""
+                ALTER TABLE menu_items 
+                ADD COLUMN image_blob LONGBLOB
+            """)
+            print("Added image_blob column to menu_items table")
+        else:
+            print("image_blob column already exists")
         
         print("Fetching menu items with image paths...")
         # Get all menu items with image paths

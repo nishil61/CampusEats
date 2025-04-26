@@ -9,29 +9,28 @@ def update_schema():
             password="",
             database="canteen1"
         )
-        cursor = conn.cursor()
+        db_executor = conn.cursor()
         
-        # Read and execute SQL file
-        with open('alter_schema.sql', 'r') as file:
-            sql_commands = file.read().split(';')
-            
-            for command in sql_commands:
-                if command.strip():
-                    try:
-                        cursor.execute(command)
-                        print(f"Successfully executed: {command[:50]}...")
-                    except mysql.connector.Error as e:
-                        print(f"Error executing command: {command[:50]}...")
-                        print(f"Error details: {e}")
+        # Add any new columns or modify existing ones
+        commands = [
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE vendor_order_status ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE payments ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+        ]
+        
+        for command in commands:
+            db_executor.execute(command)
         
         conn.commit()
-        print("Database schema updated successfully!")
-        
+        print("Schema updated successfully!")
     except mysql.connector.Error as e:
-        print(f"Error: {e}")
+        print(f"Error updating schema: {e}")
     finally:
-        if 'cursor' in locals():
-            cursor.close()
+        if 'db_executor' in locals():
+            db_executor.close()
         if 'conn' in locals():
             conn.close()
 

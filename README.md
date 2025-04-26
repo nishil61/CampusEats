@@ -1,74 +1,72 @@
 # Food Ordering System
 
-A web-based food ordering system built with Python and Streamlit, featuring multiple vendors, real-time order tracking, and secure payment integration.
+A Streamlit-based food ordering application with Razorpay payment integration.
 
 ## Features
 
-- Multi-vendor support (Fee Fa Foo, Mech Cafe, Poornima Kitchen, Nescafe)
-- Real-time order tracking
-- Secure payment integration with Razorpay
-- Admin dashboard for order management
-- Vendor-specific menu management
-- Automated invoice generation
-- Image support for menu items
+- Menu browsing by vendor
+- Shopping cart functionality
+- Order management
+- Razorpay payment integration
+- Invoice generation and viewing
 
-## Tech Stack
-
-- Python
-- Streamlit
-- MySQL
-- Razorpay API
-- PIL (Python Imaging Library)
-
-## Setup Instructions
+## Local Development Setup
 
 1. Clone the repository
-```bash
-git clone <repository-url>
-cd food-order-website
-```
+2. Install required packages:
+   ```
+   pip install -r requirements.txt
+   ```
+3. Create a .env file with the following content:
+   ```
+   # Database Configuration
+   DB_HOST=localhost
+   DB_USER=your_db_user
+   DB_PASSWORD=your_db_password
+   DB_NAME=canteen1
 
-2. Install dependencies
-```bash
-pip install -r requirements.txt
-```
+   # Razorpay Configuration
+   RAZORPAY_KEY_ID=your_razorpay_key_id
+   RAZORPAY_KEY_SECRET=your_razorpay_key_secret
+   ```
+4. Run the application:
+   ```
+   streamlit run app.py
+   ```
 
-3. Set up environment variables
-Create a `.env` file with:
-```
-RAZORPAY_KEY_ID=your_key_id
-RAZORPAY_KEY_SECRET=your_key_secret
-```
+## Deployment
 
-4. Set up the database
-```bash
-python setup_database.py
-```
+### Streamlit Cloud Deployment
 
-5. Run the application
-```bash
-streamlit run main.py
-```
+1. Push your code to a GitHub repository
+2. Visit [Streamlit Cloud](https://share.streamlit.io/)
+3. Sign in with GitHub
+4. Deploy your app by selecting your repository
+5. Add the following secrets in the Streamlit Cloud dashboard:
+   - DB_HOST
+   - DB_USER
+   - DB_PASSWORD
+   - DB_NAME
+   - RAZORPAY_KEY_ID
+   - RAZORPAY_KEY_SECRET
 
-## Project Structure
+### Database Setup for Production
 
-- `main.py` - Main application entry point
-- `ui.py` - User interface components
-- `menu_display.py` - Menu display functionality
-- `payment.py` - Payment integration
-- `auth.py` - Authentication system
-- `db.py` - Database operations
-- `components/` - Reusable UI components
-- `images/` - Menu item images
+For production deployment, you will need a cloud-hosted MySQL database. Options include:
 
-## Contributing
+1. PlanetScale (has a free tier)
+2. AWS RDS
+3. Google Cloud SQL
+4. Azure Database for MySQL
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+Update your database connection details in the Streamlit Cloud dashboard secrets.
 
-## License
+## Important Notes for Deployment
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+1. The local MySQL database will not be accessible from Streamlit Cloud. You'll need to use a cloud-hosted database.
+2. Make sure all dependencies are listed in requirements.txt
+3. Set up environment variables in Streamlit Cloud for sensitive information
+
+## Contributors
+
+Nishil, Krutagna, Jenish and Khushi 

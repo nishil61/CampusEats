@@ -3,15 +3,17 @@ import streamlit as st
 import os
 from PIL import Image
 import io
+from config import DB_CONFIG
 
 def display_vendor_menu():
     try:
         # Connect to database
         conn = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="",
-            database="canteen1"
+            host=DB_CONFIG['host'],
+            port=DB_CONFIG['port'],
+            user=DB_CONFIG['user'],
+            password=DB_CONFIG['password'],
+            database=DB_CONFIG['database']
         )
         cursor = conn.cursor()
         
@@ -115,10 +117,11 @@ def display_vendor_menu():
 def get_menu_items():
     try:
         conn = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="",
-            database="canteen1"
+            host=DB_CONFIG['host'],
+            port=DB_CONFIG['port'],
+            user=DB_CONFIG['user'],
+            password=DB_CONFIG['password'],
+            database=DB_CONFIG['database']
         )
         cursor = conn.cursor()
         

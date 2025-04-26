@@ -10,12 +10,13 @@ from menu_display import display_vendor_menu, get_menu_items
 from payment import initiate_payment, verify_payment
 import os
 from components.razorpay_button import razorpay_button
+from config import DB_CONFIG
 
 # ---------- Customer UI ----------
 def customer_ui():
     st.header("🍔 Menu")
 
-    # Poll every 5 s to pick up status changes
+    # Poll every 5 s to pick up status changes
     st_autorefresh(interval=5_000, limit=None, key="cust_poll")
 
     # get current user
@@ -48,11 +49,11 @@ def customer_ui():
             order_id = execute_query("SELECT LAST_INSERT_ID() AS id", fetch=True)[0]["id"]
             for item_id, qty in cart.items():
                 execute_query(
-                    "INSERT INTO order_items (order_id, menu_item_id, quantity) VALUES (%s, %s, %s)",
-                    (order_id, item_id, qty)
+                    "INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_time) VALUES (%s, %s, %s, %s)",
+                    (order_id, item_id, qty, next(item["price"] for item in menu if item["id"] == item_id))
                 )
-            st.success(f"✅ Order placed! Your order number is #{order_id}")
-            st.session_state["cart"] = {}
+            st.session_state.cart = {}
+            st.success("Order placed successfully!")
 
     # --- Show live‑updating recent orders ---
     st.markdown("---")
@@ -74,59 +75,50 @@ def customer_ui():
 
 # ---------- Vendor UI ----------
 def vendor_ui():
-    st.header("🧾 Vendor Dashboard")
-
-    # Poll every 5 s for new status changes
-    st_autorefresh(interval=5_000, limit=None, key="vend_poll")
-
-    # 1) orders that are just placed (inmaking)
-    st.subheader("👩‍🍳 In‐Making Orders")
-    inmaking = execute_query(
-        "SELECT o.id, u.email, o.created_at FROM orders o "
-        "JOIN users u ON o.user_id=u.id WHERE o.status='inmaking'",
-        fetch=True
-    )
-    for o in inmaking:
-        st.write(f"#{o['id']} from {o['email']} at {o['created_at']}")
-        if st.button(f"Mark #{o['id']} Ready"):
-            execute_query("UPDATE orders SET status='ready' WHERE id=%s", (o["id"],))
-            st.success(f"Order #{o['id']} is now Ready.")
-
-    # 2) orders that are ready but not yet picked up
-    st.subheader("🔔 Ready for Pick‑Up")
-    ready = execute_query(
-        "SELECT o.id, u.email, o.created_at FROM orders o "
-        "JOIN users u ON o.user_id=u.id WHERE o.status='ready'",
-        fetch=True
-    )
-    for o in ready:
-        st.write(f"#{o['id']} for {o['email']} (ready since {o['created_at']})")
-        if st.button(f"Mark #{o['id']} Picked Up"):
-            execute_query("UPDATE orders SET status='pickedup' WHERE id=%s", (o["id"],))
-            st.success(f"Order #{o['id']} marked as Picked Up.")
-
-
-
-# ---------- Admin UI (unchanged) ----------
-def admin_ui():
-    st.title("Admin Dashboard")
+    st.title("Vendor Dashboard")
     
-    # Create tabs for different admin functions
-    tab1, tab2 = st.tabs(["Orders", "Menu Management"])
+    # Get current user
+    user = get_current_user()
+    if not user or user["role"] != "vendor":
+        st.error("Please login as a vendor to access this page.")
+        return
     
-    with tab1:
-        st.header("Orders")
+    # Get vendor's name from email
+    vendor_emails = {
+        "feefafoo@campuseats.com": "FEE FA FOO",
+        "mechcafe@campuseats.com": "Mech Cafe",
+        "poornima@campuseats.com": "Poornima Kitchen",
+        "nescafe@campuseats.com": "Nescafe"
+    }
+    vendor_name = vendor_emails.get(user["email"])
+    
+    if not vendor_name:
+        st.error("Invalid vendor account.")
+        return
+    
+    # Add tabs to sidebar
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Navigation")
+    selected_tab = st.sidebar.radio(
+        "Go to",
+        ["Orders", "Menu Management"],
+        key="vendor_navigation_tabs",
+        label_visibility="collapsed"
+    )
+    
+    if selected_tab == "Orders":
+        st.header(f"{vendor_name} Orders")
         try:
-            conn = mysql.connector.connect(
-                host="localhost",
-                user="root",
-                password="",
-                database="canteen1"
-            )
-            cursor = conn.cursor()
+            # Connect to database
+            conn = mysql.connector.connect(**DB_CONFIG)
+            db_executor = conn.cursor()
             
-            # Get all orders with improved query to get unique vendors per order
-            cursor.execute("""
+            # Get vendor's ID
+            db_executor.execute("SELECT id FROM vendors WHERE name = %s", (vendor_name,))
+            vendor_id = db_executor.fetchone()[0]
+            
+            # Get orders for this vendor only
+            db_executor.execute("""
                 SELECT 
                     o.id,
                     o.user_id,
@@ -135,21 +127,22 @@ def admin_ui():
                     o.razorpay_order_id,
                     o.created_at,
                     u.email,
-                    GROUP_CONCAT(DISTINCT v.name) as vendors,
                     m.name as item_name,
                     oi.quantity,
                     oi.price_at_time,
-                    v.name as vendor_name
+                    v.name as vendor_name,
+                    vos.status as vendor_status
                 FROM orders o
                 JOIN users u ON o.user_id = u.id
                 JOIN order_items oi ON o.id = oi.order_id
                 JOIN menu_items m ON oi.menu_item_id = m.id
                 JOIN vendors v ON m.vendor_id = v.id
-                GROUP BY o.id, m.id
+                LEFT JOIN vendor_order_status vos ON o.id = vos.order_id AND v.id = vos.vendor_id
+                WHERE m.vendor_id = %s
                 ORDER BY o.created_at DESC
-            """)
+            """, (vendor_id,))
             
-            orders = cursor.fetchall()
+            orders = db_executor.fetchall()
             
             if not orders:
                 st.info("No orders found.")
@@ -157,48 +150,101 @@ def admin_ui():
             
             # Group orders by order_id
             current_order = None
-            items = []  # Store items for current order
+            items = []
             
             for order in orders:
                 if current_order != order[0]:  # New order
                     if current_order is not None:  # If not first order, display previous order's items and buttons
                         # Display all items
                         for item in items:
-                            st.write(f"₹{item[10]:.2f} x {item[9]} (₹{item[10] * item[9]:.2f}) {item[8]} from {item[11]}")
+                            st.write(f"₹{item[9]:.2f} x {item[8]} (₹{item[9] * item[8]:.2f}) {item[7]} from {item[10]}")
                         
                         # Add status update buttons after all items
                         st.write("---")  # Add separator before buttons
                         col1, col2, col3 = st.columns(3)
                         with col1:
-                            if st.button(f"Mark Ready #{current_order}"):
-                                cursor.execute(
-                                    "UPDATE orders SET status = 'ready' WHERE id = %s",
-                                    (current_order,)
-                                )
+                            if st.button(f"Mark Ready #{current_order}", key=f"ready_{current_order}"):
+                                # Update vendor-specific status
+                                db_executor.execute("""
+                                    INSERT INTO vendor_order_status (order_id, vendor_id, status)
+                                    VALUES (%s, %s, 'ready')
+                                    ON DUPLICATE KEY UPDATE status = 'ready'
+                                """, (current_order, vendor_id))
+                                
+                                # Check if all vendors have marked as ready
+                                db_executor.execute("""
+                                    SELECT COUNT(DISTINCT m.vendor_id) as total_vendors,
+                                           COUNT(DISTINCT vos.vendor_id) as ready_vendors
+                                    FROM order_items oi
+                                    JOIN menu_items m ON oi.menu_item_id = m.id
+                                    LEFT JOIN vendor_order_status vos ON oi.order_id = vos.order_id AND m.vendor_id = vos.vendor_id AND vos.status = 'ready'
+                                    WHERE oi.order_id = %s
+                                """, (current_order,))
+                                
+                                result = db_executor.fetchone()
+                                if result[0] == result[1]:  # All vendors are ready
+                                    db_executor.execute(
+                                        "UPDATE orders SET status = 'ready' WHERE id = %s",
+                                        (current_order,)
+                                    )
+                                
                                 conn.commit()
                                 st.rerun()
+                        
                         with col2:
-                            if st.button(f"Mark Picked Up #{current_order}"):
-                                cursor.execute(
-                                    "UPDATE orders SET status = 'pickedup' WHERE id = %s",
-                                    (current_order,)
-                                )
+                            if st.button(f"Mark Picked Up #{current_order}", key=f"pickedup_{current_order}"):
+                                # Update vendor-specific status
+                                db_executor.execute("""
+                                    INSERT INTO vendor_order_status (order_id, vendor_id, status)
+                                    VALUES (%s, %s, 'pickedup')
+                                    ON DUPLICATE KEY UPDATE status = 'pickedup'
+                                """, (current_order, vendor_id))
+                                
+                                # Check if all vendors have marked as picked up
+                                db_executor.execute("""
+                                    SELECT COUNT(DISTINCT m.vendor_id) as total_vendors,
+                                           COUNT(DISTINCT vos.vendor_id) as pickedup_vendors
+                                    FROM order_items oi
+                                    JOIN menu_items m ON oi.menu_item_id = m.id
+                                    LEFT JOIN vendor_order_status vos ON oi.order_id = vos.order_id AND m.vendor_id = vos.vendor_id AND vos.status = 'pickedup'
+                                    WHERE oi.order_id = %s
+                                """, (current_order,))
+                                
+                                result = db_executor.fetchone()
+                                if result[0] == result[1]:  # All vendors are picked up
+                                    db_executor.execute(
+                                        "UPDATE orders SET status = 'pickedup' WHERE id = %s",
+                                        (current_order,)
+                                    )
+                                
                                 conn.commit()
                                 st.rerun()
+                        
                         with col3:
-                            if items[0][4]:  # Only show invoice button if Razorpay order exists
-                                try:
-                                    from payment import client
-                                    invoices = client.invoice.all()
-                                    for invoice in invoices['items']:
-                                        if invoice['notes'].get('order_id') == str(current_order):
-                                            invoice_url = invoice['short_url']
-                                            st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">View Invoice</button></a>', unsafe_allow_html=True)
-                                            break
-                                    else:
-                                        st.write("Invoice not found")
-                                except Exception as e:
-                                    st.error(f"Error fetching invoice: {str(e)}")
+                            # Add View Invoice button if Razorpay order exists
+                            if order[4]:  # razorpay_order_id
+                                # First check in session state
+                                if 'invoices' in st.session_state and str(current_order) in st.session_state.invoices:
+                                    invoice_url = st.session_state.invoices[str(current_order)]
+                                    st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">View Invoice</button></a>', unsafe_allow_html=True)
+                                else:
+                                    # If not in session state, try to fetch from Razorpay
+                                    try:
+                                        from payment import client
+                                        invoices = client.invoice.all()
+                                        for invoice in invoices['items']:
+                                            if invoice['notes'].get('order_id') == str(current_order):
+                                                invoice_url = invoice['short_url']
+                                                st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">View Invoice</button></a>', unsafe_allow_html=True)
+                                                # Store in session state for future
+                                                if 'invoices' not in st.session_state:
+                                                    st.session_state.invoices = {}
+                                                st.session_state.invoices[str(current_order)] = invoice_url
+                                                break
+                                        else:
+                                            st.write("Invoice not found")
+                                    except Exception as e:
+                                        st.error(f"Error fetching invoice: {str(e)}")
                         
                         st.write("---")  # Add separator between orders
                         items = []  # Clear items for next order
@@ -206,20 +252,10 @@ def admin_ui():
                     current_order = order[0]
                     st.subheader(f"Order #{order[0]}")
                     st.write(f"Customer: {order[6]}")  # user email
-                    # Get user name from users table
-                    cursor.execute("SELECT name FROM users WHERE id = %s", (order[1],))
-                    user_name = cursor.fetchone()
-                    if user_name and user_name[0]:
-                        st.write(f"Customer Name: {user_name[0]}")
-                    if order[4]:  # razorpay_order_id
-                        st.write(f"Razorpay Order ID: {order[4]}")
-                    st.write(f"Status: {order[3]}")
+                    st.write(f"Status: {order[11] or 'pending'}")  # vendor-specific status
                     st.write(f"Total: ₹{order[2]:.2f}")
-                    # Format date properly
                     order_date = order[5].strftime("%Y-%m-%d %H:%M:%S")
                     st.write(f"Date: {order_date}")
-                    # Display vendors
-                    st.write(f"Vendor(s): {order[7]}")
                     st.write("Items:")
                 
                 # Add item to current order's items
@@ -228,186 +264,183 @@ def admin_ui():
             # Display last order's items and buttons
             if items:
                 for item in items:
-                    st.write(f"₹{item[10]:.2f} x {item[9]} (₹{item[10] * item[9]:.2f}) {item[8]} from {item[11]}")
+                    st.write(f"₹{item[9]:.2f} x {item[8]} (₹{item[9] * item[8]:.2f}) {item[7]} from {item[10]}")
                 
                 st.write("---")  # Add separator before buttons
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    if st.button(f"Mark Ready #{current_order}"):
-                        cursor.execute(
+                    if st.button(f"Mark Ready #{current_order}", key=f"ready_{current_order}_last"):
+                        db_executor.execute(
                             "UPDATE orders SET status = 'ready' WHERE id = %s",
                             (current_order,)
                         )
                         conn.commit()
                         st.rerun()
                 with col2:
-                    if st.button(f"Mark Picked Up #{current_order}"):
-                        cursor.execute(
+                    if st.button(f"Mark Picked Up #{current_order}", key=f"pickedup_{current_order}_last"):
+                        db_executor.execute(
                             "UPDATE orders SET status = 'pickedup' WHERE id = %s",
                             (current_order,)
                         )
                         conn.commit()
                         st.rerun()
                 with col3:
-                    if items[0][4]:  # Only show invoice button if Razorpay order exists
-                        try:
-                            from payment import client
-                            invoices = client.invoice.all()
-                            for invoice in invoices['items']:
-                                if invoice['notes'].get('order_id') == str(current_order):
-                                    invoice_url = invoice['short_url']
-                                    st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">View Invoice</button></a>', unsafe_allow_html=True)
-                                    break
-                            else:
-                                st.write("Invoice not found")
-                        except Exception as e:
-                            st.error(f"Error fetching invoice: {str(e)}")
-            
+                    # Add View Invoice button if Razorpay order exists
+                    if order[4]:  # razorpay_order_id
+                        # First check in session state
+                        if 'invoices' in st.session_state and str(current_order) in st.session_state.invoices:
+                            invoice_url = st.session_state.invoices[str(current_order)]
+                            st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">View Invoice</button></a>', unsafe_allow_html=True)
+                        else:
+                            # If not in session state, try to fetch from Razorpay
+                            try:
+                                from payment import client
+                                invoices = client.invoice.all()
+                                for invoice in invoices['items']:
+                                    if invoice['notes'].get('order_id') == str(current_order):
+                                        invoice_url = invoice['short_url']
+                                        st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">View Invoice</button></a>', unsafe_allow_html=True)
+                                        # Store in session state for future
+                                        if 'invoices' not in st.session_state:
+                                            st.session_state.invoices = {}
+                                        st.session_state.invoices[str(current_order)] = invoice_url
+                                        break
+                                else:
+                                    st.write("Invoice not found")
+                            except Exception as e:
+                                st.error(f"Error fetching invoice: {str(e)}")
+        
         except mysql.connector.Error as e:
             st.error(f"Database error: {e}")
         except Exception as e:
             st.error(f"Error: {e}")
         finally:
-            if 'cursor' in locals():
-                cursor.close()
+            if 'db_executor' in locals():
+                db_executor.close()
             if 'conn' in locals():
                 conn.close()
     
-    with tab2:
-        st.header("Menu Management")
-        
+    elif selected_tab == "Menu Management":
+        st.header(f"{vendor_name} Menu Management")
         try:
-            conn = mysql.connector.connect(
-                host="localhost",
-                user="root",
-                password="",
-                database="canteen1"
-            )
-            cursor = conn.cursor()
+            # Connect to database
+            conn = mysql.connector.connect(**DB_CONFIG)
+            db_executor = conn.cursor()
             
-            # Get all vendors
-            cursor.execute("SELECT id, name FROM vendors ORDER BY name")
-            vendors = cursor.fetchall()
+            # Get vendor's ID
+            db_executor.execute("SELECT id FROM vendors WHERE name = %s", (vendor_name,))
+            vendor_id = db_executor.fetchone()[0]
             
-            if vendors:
-                # Create tabs for each vendor
-                vendor_tabs = st.tabs([vendor[1] for vendor in vendors])
-                
-                for i, (vendor_id, vendor_name) in enumerate(vendors):
-                    with vendor_tabs[i]:
-                        st.subheader(f"{vendor_name} Menu Items")
-                        
-                        # Get menu items for this vendor
-                        cursor.execute("""
-                            SELECT id, name, description, price, available, image_path 
-                            FROM menu_items 
-                            WHERE vendor_id = %s
-                            ORDER BY name
-                        """, (vendor_id,))
-                        
-                        menu_items = cursor.fetchall()
-                        
-                        if menu_items:
-                            # Create a form for batch updates
-                            with st.form(f"menu_items_{vendor_id}"):
-                                st.write("Update item availability:")
-                                
-                                # Store changes to apply them all at once
-                                changes = {}
-                                
-                                # Create a container for menu items
-                                for item in menu_items:
-                                    item_id, name, desc, price, available, image_path = item
-                                    col1, col2, col3 = st.columns([3, 1, 1])
-                                    
-                                    with col1:
-                                        st.write(f"**{name}**")
-                                        st.write(f"Price: ₹{price:.2f}")
-                                        if desc:
-                                            st.write(f"*{desc}*")
-                                    
-                                    with col2:
-                                        # Checkbox for availability
-                                        new_status = st.checkbox(
-                                            "Available",
-                                            value=available,
-                                            key=f"available_{item_id}"
-                                        )
-                                        if new_status != available:
-                                            changes[item_id] = new_status
-                                    
-                                    with col3:
-                                        st.write("Status:")
-                                        if available:
-                                            st.success("In Stock")
-                                        else:
-                                            st.error("Out of Stock")
-                                    
-                                    st.write("---")
-                                
-                                # Submit button for the form
-                                if st.form_submit_button("Save Changes"):
-                                    try:
-                                        for item_id, new_status in changes.items():
-                                            cursor.execute("""
-                                                UPDATE menu_items 
-                                                SET available = %s 
-                                                WHERE id = %s
-                                            """, (new_status, item_id))
-                                        
-                                        conn.commit()
-                                        st.success("Menu items updated successfully!")
-                                        st.rerun()
-                                    except mysql.connector.Error as e:
-                                        st.error(f"Error updating menu items: {e}")
-                                        conn.rollback()
-                        else:
-                            st.info(f"No menu items found for {vendor_name}")
-                
-                # Add new menu item section (for Poornima Kitchen)
-                if any(vendor[1] == "Poornima Kitchen" for vendor in vendors):
-                    st.markdown("---")
-                    st.subheader("Add New Thali Item (Poornima Kitchen)")
+            # Get menu items for this vendor
+            db_executor.execute("""
+                SELECT id, name, description, price, available, image_path 
+                FROM menu_items 
+                WHERE vendor_id = %s
+                ORDER BY name
+            """, (vendor_id,))
+            
+            menu_items = db_executor.fetchall()
+            
+            if menu_items:
+                # Create a form for batch updates
+                with st.form(f"menu_items_{vendor_id}"):
+                    st.write("Update item availability:")
                     
-                    # Get Poornima Kitchen's vendor_id
-                    poornima_vendor_id = next(vendor[0] for vendor in vendors if vendor[1] == "Poornima Kitchen")
+                    # Store changes to apply them all at once
+                    changes = {}
                     
-                    # Create form for new menu item
-                    with st.form("add_menu_item"):
-                        # Menu item details
-                        name = st.text_input("Item Name (e.g., Monday Special Thali)")
-                        description = st.text_area("Description (List the items in thali)")
-                        price = st.number_input("Price (₹)", min_value=0.0, step=1.0)
-                        available = st.checkbox("Available", value=True)
-                        image_path = st.text_input("Image Path (Optional)")
+                    # Create a container for menu items
+                    for item in menu_items:
+                        item_id, name, desc, price, available, image_path = item
+                        col1, col2, col3 = st.columns([3, 1, 1])
                         
-                        # Submit button
-                        if st.form_submit_button("Add Menu Item"):
-                            if name and description and price > 0:
-                                try:
-                                    cursor.execute("""
-                                        INSERT INTO menu_items 
-                                        (vendor_id, name, description, price, available, image_path)
-                                        VALUES (%s, %s, %s, %s, %s, %s)
-                                    """, (poornima_vendor_id, name, description, price, available, image_path or None))
-                                    
-                                    conn.commit()
-                                    st.success(f"Successfully added {name} to the menu!")
-                                    st.rerun()
-                                except mysql.connector.Error as e:
-                                    st.error(f"Error adding menu item: {e}")
+                        with col1:
+                            st.write(f"**{name}**")
+                            st.write(f"Price: ₹{price:.2f}")
+                            if desc:
+                                st.write(f"*{desc}*")
+                        
+                        with col2:
+                            # Checkbox for availability
+                            new_status = st.checkbox(
+                                "Available",
+                                value=available,
+                                key=f"available_{item_id}"
+                            )
+                            if new_status != available:
+                                changes[item_id] = new_status
+                        
+                        with col3:
+                            st.write("Status:")
+                            if available:
+                                st.success("In Stock")
                             else:
-                                st.error("Please fill in all required fields (Name, Description, and Price)")
+                                st.error("Out of Stock")
+                        
+                        st.write("---")
+                    
+                    # Submit button for the form
+                    submitted = st.form_submit_button("Save Changes")
+                    if submitted:
+                        try:
+                            for item_id, new_status in changes.items():
+                                db_executor.execute("""
+                                    UPDATE menu_items 
+                                    SET available = %s 
+                                    WHERE id = %s
+                                """, (new_status, item_id))
+                            
+                            conn.commit()
+                            st.success("Menu items updated successfully!")
+                            st.rerun()
+                        except mysql.connector.Error as e:
+                            st.error(f"Error updating menu items: {e}")
+                            conn.rollback()
             else:
-                st.error("No vendors found in the database")
+                st.info("No menu items found.")
             
+            # Add new menu item section
+            st.markdown("---")
+            st.subheader("Add New Menu Item")
+            
+            # Create form for new menu item
+            with st.form("add_menu_item"):
+                # Item details
+                name = st.text_input("Item Name")
+                description = st.text_area("Description")
+                price = st.number_input("Price", min_value=0.0, step=0.01)
+                available = st.checkbox("Available", value=True)
+                
+                # Image path input
+                image_path = st.text_input("Image Path (e.g., images/item_name.jpg)")
+                st.info("Note: Please ensure the image file exists in the specified path before adding the item.")
+                
+                # Submit button
+                submitted = st.form_submit_button("Add Menu Item")
+                if submitted:
+                    if name and description and price > 0:
+                        try:
+                            db_executor.execute("""
+                                INSERT INTO menu_items 
+                                (vendor_id, name, description, price, available, image_path)
+                                VALUES (%s, %s, %s, %s, %s, %s)
+                            """, (vendor_id, name, description, price, available, image_path or None))
+                            
+                            conn.commit()
+                            st.success(f"Successfully added {name} to the menu!")
+                            st.rerun()
+                        except mysql.connector.Error as e:
+                            st.error(f"Error adding menu item: {e}")
+                    else:
+                        st.error("Please fill in all required fields (Name, Description, and Price)")
+        
         except mysql.connector.Error as e:
             st.error(f"Database error: {e}")
         except Exception as e:
             st.error(f"Error: {e}")
         finally:
-            if 'cursor' in locals():
-                cursor.close()
+            if 'db_executor' in locals():
+                db_executor.close()
             if 'conn' in locals():
                 conn.close()
 
@@ -476,25 +509,20 @@ def cart_ui():
     total = 0
     
     try:
-        # Connect to database
-        conn = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="",
-            database="canteen1"
-        )
-        cursor = conn.cursor()
+        # Use the config for database connection
+        conn = mysql.connector.connect(**DB_CONFIG)
+        db_executor = conn.cursor()
         
         for item_id, quantity in st.session_state.cart.items():
             # Get item details from database
-            cursor.execute("""
+            db_executor.execute("""
                 SELECT m.name, m.price, v.name as vendor_name
                 FROM menu_items m
                 JOIN vendors v ON m.vendor_id = v.id
                 WHERE m.id = %s
             """, (item_id,))
             
-            item = cursor.fetchone()
+            item = db_executor.fetchone()
             if item:
                 name, price, vendor = item
                 item_total = price * quantity
@@ -506,21 +534,21 @@ def cart_ui():
         
         if st.button("Place Order"):
             # Create order
-            cursor.execute(
+            db_executor.execute(
                 "INSERT INTO orders (user_id, total, status) VALUES (%s, %s, 'inmaking')",
                 (st.session_state.user['id'], total)
             )
             
-            order_id = cursor.lastrowid
+            order_id = db_executor.lastrowid
             
             # Add order items
             for item_id, quantity in st.session_state.cart.items():
-                cursor.execute("""
+                db_executor.execute("""
                     SELECT price FROM menu_items WHERE id = %s
                 """, (item_id,))
-                price = cursor.fetchone()[0]
+                price = db_executor.fetchone()[0]
                 
-                cursor.execute(
+                db_executor.execute(
                     "INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_time) VALUES (%s, %s, %s, %s)",
                     (order_id, item_id, quantity, price)
                 )
@@ -535,7 +563,7 @@ def cart_ui():
             razorpay_order_id = initiate_payment(total, order_id)
             if razorpay_order_id:
                 # Update order with Razorpay order ID
-                cursor.execute(
+                db_executor.execute(
                     "UPDATE orders SET razorpay_order_id = %s WHERE id = %s",
                     (razorpay_order_id, order_id)
                 )
@@ -543,15 +571,6 @@ def cart_ui():
                 
                 # Clear cart
                 st.session_state.cart = {}
-                
-                # Show Razorpay payment
-                razorpay_button(
-                    amount=total,
-                    order_id=order_id,
-                    razorpay_order_id=razorpay_order_id,
-                    user_name=st.session_state.user['name'],
-                    user_email=st.session_state.user['email']
-                )
                 
                 # Add payment status checker with Streamlit notifications
                 st.markdown(f"""
@@ -596,8 +615,8 @@ def cart_ui():
         if 'conn' in locals():
             conn.rollback()
     finally:
-        if 'cursor' in locals():
-            cursor.close()
+        if 'db_executor' in locals():
+            db_executor.close()
         if 'conn' in locals():
             conn.close()
 
@@ -605,28 +624,26 @@ def view_my_orders_ui():
     st.title("My Orders")
     
     try:
-        conn = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="",
-            database="canteen1"
-        )
-        cursor = conn.cursor()
+        # Use the config for database connection
+        conn = mysql.connector.connect(**DB_CONFIG)
+        db_executor = conn.cursor()
         
-        # Get user's orders
-        cursor.execute("""
-            SELECT o.id, o.status, o.total, o.created_at,
+        # Get user's orders with vendor information and status
+        db_executor.execute("""
+            SELECT o.id, o.status, o.total, o.created_at, o.razorpay_order_id,
                    v.name as vendor_name, m.name as item_name, 
-                   oi.quantity, oi.price_at_time
+                   oi.quantity, oi.price_at_time,
+                   vos.status as vendor_status
             FROM orders o
             JOIN order_items oi ON o.id = oi.order_id
             JOIN menu_items m ON oi.menu_item_id = m.id
             JOIN vendors v ON m.vendor_id = v.id
+            LEFT JOIN vendor_order_status vos ON o.id = vos.order_id AND v.id = vos.vendor_id
             WHERE o.user_id = %s
             ORDER BY o.created_at DESC
         """, (st.session_state.user['id'],))
         
-        orders = cursor.fetchall()
+        orders = db_executor.fetchall()
         
         if not orders:
             st.info("You have no orders yet.")
@@ -634,8 +651,44 @@ def view_my_orders_ui():
         
         # Group orders by order_id
         current_order = None
+        items = []
+        
         for order in orders:
             if current_order != order[0]:  # order_id
+                if current_order is not None:  # If not first order, display previous order's items and buttons
+                    # Display all items with their vendor-specific status
+                    for item in items:
+                        status_text = f" ({item[9] or 'pending'})" if item[9] else ""
+                        st.write(f"- {item[6]} x {item[7]} (₹{item[8]:.2f}) from {item[5]}{status_text}")
+                    
+                    # Add View Invoice button if Razorpay order exists
+                    if items[0][4]:  # razorpay_order_id
+                        # First check in session state
+                        if 'invoices' in st.session_state and str(current_order) in st.session_state.invoices:
+                            invoice_url = st.session_state.invoices[str(current_order)]
+                            st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">View Invoice</button></a>', unsafe_allow_html=True)
+                        else:
+                            # If not in session state, try to fetch from Razorpay
+                            try:
+                                from payment import client
+                                invoices = client.invoice.all()
+                                for invoice in invoices['items']:
+                                    if invoice['notes'].get('order_id') == str(current_order):
+                                        invoice_url = invoice['short_url']
+                                        st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">View Invoice</button></a>', unsafe_allow_html=True)
+                                        # Store in session state for future
+                                        if 'invoices' not in st.session_state:
+                                            st.session_state.invoices = {}
+                                        st.session_state.invoices[str(current_order)] = invoice_url
+                                        break
+                                else:
+                                    st.write("Invoice not found")
+                            except Exception as e:
+                                st.error(f"Error fetching invoice: {str(e)}")
+                    
+                    st.write("---")  # Add separator between orders
+                    items = []  # Clear items for next order
+                
                 current_order = order[0]
                 st.subheader(f"Order #{order[0]}")
                 st.write(f"Status: {order[1]}")
@@ -643,15 +696,47 @@ def view_my_orders_ui():
                 st.write(f"Date: {order[3].strftime('%Y-%m-%d %H:%M:%S')}")
                 st.write("Items:")
             
-            st.write(f"- {order[5]} x {order[6]} (₹{order[7]:.2f}) from {order[4]}")
+            # Add item to current order's items
+            items.append(order)
+        
+        # Display last order's items and buttons
+        if items:
+            for item in items:
+                status_text = f" ({item[9] or 'pending'})" if item[9] else ""
+                st.write(f"- {item[6]} x {item[7]} (₹{item[8]:.2f}) from {item[5]}{status_text}")
+            
+            # Add View Invoice button if Razorpay order exists
+            if items[0][4]:  # razorpay_order_id
+                # First check in session state
+                if 'invoices' in st.session_state and str(current_order) in st.session_state.invoices:
+                    invoice_url = st.session_state.invoices[str(current_order)]
+                    st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">View Invoice</button></a>', unsafe_allow_html=True)
+                else:
+                    # If not in session state, try to fetch from Razorpay
+                    try:
+                        from payment import client
+                        invoices = client.invoice.all()
+                        for invoice in invoices['items']:
+                            if invoice['notes'].get('order_id') == str(current_order):
+                                invoice_url = invoice['short_url']
+                                st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">View Invoice</button></a>', unsafe_allow_html=True)
+                                # Store in session state for future
+                                if 'invoices' not in st.session_state:
+                                    st.session_state.invoices = {}
+                                st.session_state.invoices[str(current_order)] = invoice_url
+                                break
+                        else:
+                            st.write("Invoice not found")
+                    except Exception as e:
+                        st.error(f"Error fetching invoice: {str(e)}")
         
     except mysql.connector.Error as e:
         st.error(f"Database error: {e}")
     except Exception as e:
         st.error(f"Error: {e}")
     finally:
-        if 'cursor' in locals():
-            cursor.close()
+        if 'db_executor' in locals():
+            db_executor.close()
         if 'conn' in locals():
             conn.close()
 
@@ -664,7 +749,7 @@ def place_order():
             password="",
             database="canteen1"
         )
-        cursor = conn.cursor()
+        db_executor = conn.cursor()
         
         # Start transaction
         conn.start_transaction()
@@ -722,18 +807,18 @@ def place_order():
             return
         
         # Create order
-        cursor.execute(
+        db_executor.execute(
             "INSERT INTO orders (user_id, total, status) VALUES (%s, %s, 'inmaking')",
             (st.session_state.user['id'], total)
         )
         
         # Get the auto-incremented order ID
-        order_id = cursor.lastrowid
+        order_id = db_executor.lastrowid
         print(f"\nCreated order with ID: {order_id}")
         
         # Add order items
         for item in order_items:
-            cursor.execute(
+            db_executor.execute(
                 "INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_time) VALUES (%s, %s, %s, %s)",
                 (order_id, item['item_id'], item['quantity'], item['price'])
             )
@@ -745,7 +830,7 @@ def place_order():
         print(f"Total amount: ₹{total:.2f}")
         
         # Verify the order was created
-        cursor.execute("""
+        db_executor.execute("""
             SELECT o.*, v.name as vendor_name, m.name as item_name, 
                    m.price, oi.quantity, oi.price_at_time
             FROM orders o
@@ -755,7 +840,7 @@ def place_order():
             WHERE o.id = %s
         """, (order_id,))
         
-        items = cursor.fetchall()
+        items = db_executor.fetchall()
         if items:
             print("\nOrder verification:")
             print(f"Order ID: {items[0][0]}")
@@ -778,8 +863,8 @@ def place_order():
         print(f"Error: {e}")
         conn.rollback()
     finally:
-        if 'cursor' in locals():
-            cursor.close()
+        if 'db_executor' in locals():
+            db_executor.close()
         if 'conn' in locals():
             conn.close()
 
@@ -792,27 +877,27 @@ def register():
             password="",
             database="canteen1"
         )
-        cursor = conn.cursor()
+        db_executor = conn.cursor()
         
         print("\n=== Registration ===")
         name = input("Enter your name: ")
         email = input("Enter your email: ")
         password = input("Enter your password: ")
-        role = input("Enter your role (admin/vendor/customer): ").lower()
+        role = input("Enter your role (user/vendor): ").lower()
         
         # Validate role
-        if role not in ['admin', 'vendor', 'customer']:
-            print("Invalid role. Please enter 'admin', 'vendor', or 'customer'.")
+        if role not in ['user', 'vendor']:
+            print("Invalid role. Please enter 'user' or 'vendor'.")
             return
         
         # Check if email already exists
-        cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
-        if cursor.fetchone():
+        db_executor.execute("SELECT id FROM users WHERE email = %s", (email,))
+        if db_executor.fetchone():
             print("Email already registered. Please use a different email or login.")
             return
         
         # Insert new user
-        cursor.execute(
+        db_executor.execute(
             "INSERT INTO users (name, email, password, role) VALUES (%s, %s, %s, %s)",
             (name, email, password, role)
         )
@@ -833,7 +918,274 @@ def register():
         print(f"Error: {e}")
         conn.rollback()
     finally:
-        if 'cursor' in locals():
-            cursor.close()
+        if 'db_executor' in locals():
+            db_executor.close()
         if 'conn' in locals():
             conn.close()
+
+def admin_ui():
+    st.title("Admin Dashboard")
+    
+    # Add tabs for different admin functions
+    admin_tab = st.sidebar.radio(
+        "Admin Functions",
+        ["Vendor Management", "Order Analysis"],
+        key="admin_navigation_tabs"
+    )
+    
+    if admin_tab == "Vendor Management":
+        st.header("Vendor Management")
+        
+        # Add new vendor form
+        with st.form("add_vendor_form"):
+            st.subheader("Add New Vendor")
+            vendor_name = st.text_input("Vendor Name")
+            vendor_email = st.text_input("Vendor Email")
+            vendor_password = st.text_input("Vendor Password", type="password")
+            
+            if st.form_submit_button("Add Vendor"):
+                try:
+                    conn = mysql.connector.connect(**DB_CONFIG)
+                    db_executor = conn.cursor()
+                    
+                    # Check if vendor email already exists
+                    db_executor.execute("SELECT id FROM users WHERE email = %s", (vendor_email,))
+                    if db_executor.fetchone():
+                        st.error("Vendor with this email already exists.")
+                    else:
+                        # Create vendor user
+                        db_executor.execute(
+                            "INSERT INTO users (name, email, password, role) VALUES (%s, %s, %s, 'vendor')",
+                            (vendor_name, vendor_email, vendor_password)
+                        )
+                        user_id = db_executor.lastrowid
+                        
+                        # Create vendor entry
+                        db_executor.execute(
+                            "INSERT INTO vendors (name, user_id) VALUES (%s, %s)",
+                            (vendor_name, user_id)
+                        )
+                        
+                        conn.commit()
+                        st.success(f"Successfully added vendor: {vendor_name}")
+                        st.rerun()
+                        
+                except mysql.connector.Error as e:
+                    st.error(f"Database error: {e}")
+                finally:
+                    if 'db_executor' in locals():
+                        db_executor.close()
+                    if 'conn' in locals():
+                        conn.close()
+        
+        # Remove vendor section
+        st.subheader("Remove Vendor")
+        try:
+            conn = mysql.connector.connect(**DB_CONFIG)
+            db_executor = conn.cursor()
+            
+            # Get all vendors
+            db_executor.execute("""
+                SELECT v.id, v.name, u.email 
+                FROM vendors v
+                JOIN users u ON v.name = u.name 
+                WHERE u.role = 'vendor'
+            """)
+            vendors = db_executor.fetchall()
+            
+            if vendors:
+                vendor_options = [f"{v[1]} ({v[2]})" for v in vendors]
+                selected_vendor = st.selectbox("Select Vendor to Remove", vendor_options)
+                
+                if st.button("Remove Vendor"):
+                    # Get vendor ID from selection
+                    vendor_id = vendors[vendor_options.index(selected_vendor)][0]
+                    
+                    # Delete vendor and associated user
+                    db_executor.execute("DELETE FROM vendors WHERE id = %s", (vendor_id,))
+                    db_executor.execute("DELETE FROM users WHERE name = (SELECT name FROM vendors WHERE id = %s)", (vendor_id,))
+                    
+                    conn.commit()
+                    st.success(f"Successfully removed vendor: {selected_vendor}")
+                    st.rerun()
+            else:
+                st.info("No vendors found.")
+                
+        except mysql.connector.Error as e:
+            st.error(f"Database error: {e}")
+        finally:
+            if 'db_executor' in locals():
+                db_executor.close()
+            if 'conn' in locals():
+                conn.close()
+    
+    elif admin_tab == "Order Analysis":
+        st.header("Order Analysis by Vendor")
+        
+        try:
+            conn = mysql.connector.connect(**DB_CONFIG)
+            db_executor = conn.cursor()
+            
+            # Get date range for analysis
+            col1, col2 = st.columns(2)
+            with col1:
+                start_date = st.date_input("Start Date")
+            with col2:
+                end_date = st.date_input("End Date")
+            
+            # Get vendor-wise order statistics
+            db_executor.execute("""
+                SELECT 
+                    v.name as vendor_name,
+                    COUNT(DISTINCT o.id) as total_orders,
+                    SUM(oi.quantity) as total_items,
+                    SUM(oi.quantity * oi.price_at_time) as total_revenue,
+                    AVG(oi.quantity * oi.price_at_time) as avg_order_value
+                FROM vendors v
+                JOIN menu_items m ON v.id = m.vendor_id
+                JOIN order_items oi ON m.id = oi.menu_item_id
+                JOIN orders o ON oi.order_id = o.id
+                WHERE o.created_at BETWEEN %s AND %s
+                GROUP BY v.id, v.name
+                ORDER BY total_revenue DESC
+            """, (start_date, end_date))
+            
+            vendor_stats = db_executor.fetchall()
+            
+            if vendor_stats:
+                # Display summary statistics
+                st.subheader("Vendor Performance Summary")
+                
+                # Create columns for metrics
+                cols = st.columns(len(vendor_stats))
+                for i, (vendor, orders, items, revenue, avg_value) in enumerate(vendor_stats):
+                    with cols[i]:
+                        st.metric(
+                            label=vendor,
+                            value=f"₹{revenue:,.2f}",
+                            delta=f"{orders} orders"
+                        )
+                
+                # Display detailed statistics in a table
+                st.subheader("Detailed Statistics")
+                stats_data = {
+                    "Vendor": [v[0] for v in vendor_stats],
+                    "Total Orders": [v[1] for v in vendor_stats],
+                    "Total Items Sold": [v[2] for v in vendor_stats],
+                    "Total Revenue": [f"₹{v[3]:,.2f}" for v in vendor_stats],
+                    "Average Order Value": [f"₹{v[4]:,.2f}" for v in vendor_stats]
+                }
+                st.dataframe(stats_data)
+                
+                # Display revenue trend chart
+                st.subheader("Revenue Trend")
+                db_executor.execute("""
+                    SELECT 
+                        DATE(o.created_at) as order_date,
+                        v.name as vendor_name,
+                        SUM(oi.quantity * oi.price_at_time) as daily_revenue
+                    FROM orders o
+                    JOIN order_items oi ON o.id = oi.order_id
+                    JOIN menu_items m ON oi.menu_item_id = m.id
+                    JOIN vendors v ON m.vendor_id = v.id
+                    WHERE o.created_at BETWEEN %s AND %s
+                    GROUP BY DATE(o.created_at), v.name
+                    ORDER BY order_date, v.name
+                """, (start_date, end_date))
+                
+                trend_data = db_executor.fetchall()
+                if trend_data:
+                    import pandas as pd
+                    
+                    # Convert to DataFrame and ensure proper data types
+                    df = pd.DataFrame(trend_data, columns=['date', 'vendor', 'revenue'])
+                    df['revenue'] = df['revenue'].astype(float)  # Ensure revenue is float
+                    df['date'] = pd.to_datetime(df['date'])  # Convert date to datetime
+                    
+                    # Create pivot table for the chart with proper column names
+                    pivot_df = df.pivot(index='date', columns='vendor', values='revenue')
+                    pivot_df.index.name = 'Date'
+                    pivot_df.columns.name = 'Vendor'
+                    
+                    # Fill NaN values with 0
+                    pivot_df = pivot_df.fillna(0)
+                    
+                    # Add a title above the chart
+                    st.markdown("### Daily Revenue Trend by Vendor")
+                    
+                    # Create a container for the chart
+                    chart_container = st.container()
+                    
+                    # Create columns for layout
+                    col1, col2 = st.columns([1, 15])
+                    
+                    with col1:
+                        # Y-axis label
+                        st.markdown("""
+                        <div style='writing-mode: vertical-lr; 
+                        transform: rotate(180deg);
+                        text-align: center; 
+                        height: 500px; 
+                        display: flex; 
+                        align-items: center; 
+                        justify-content: center;
+                        font-weight: bold;
+                        font-size: 14px;'>
+                        Revenue (₹)
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    with col2:
+                        # X-axis label
+                        st.markdown("""
+                        <div style='text-align: center; 
+                        margin-bottom: 10px;
+                        font-weight: bold;
+                        font-size: 14px;'>
+                        Date
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Chart with custom styling
+                        st.line_chart(
+                            pivot_df,
+                            use_container_width=True,
+                            height=500
+                        )
+                    
+                    # Add summary statistics below the chart
+                    st.markdown("### Summary Statistics")
+                    summary_stats = df.groupby('vendor')['revenue'].agg(['sum', 'mean', 'count']).round(2)
+                    summary_stats.columns = ['Total Revenue', 'Average Daily Revenue', 'Number of Days']
+                    summary_stats['Total Revenue'] = summary_stats['Total Revenue'].apply(lambda x: f"₹{x:,.2f}")
+                    summary_stats['Average Daily Revenue'] = summary_stats['Average Daily Revenue'].apply(lambda x: f"₹{x:,.2f}")
+                    
+                    # Style the summary table
+                    st.dataframe(
+                        summary_stats,
+                        use_container_width=True,
+                        column_config={
+                            "Total Revenue": st.column_config.TextColumn(
+                                "Total Revenue",
+                                help="Total revenue for the selected period"
+                            ),
+                            "Average Daily Revenue": st.column_config.TextColumn(
+                                "Average Daily Revenue",
+                                help="Average daily revenue"
+                            ),
+                            "Number of Days": st.column_config.NumberColumn(
+                                "Number of Days",
+                                help="Number of days with sales"
+                            )
+                        }
+                    )
+            else:
+                st.info("No order data found for the selected date range.")
+                
+        except mysql.connector.Error as e:
+            st.error(f"Database error: {e}")
+        finally:
+            if 'db_executor' in locals():
+                db_executor.close()
+            if 'conn' in locals():
+                conn.close()

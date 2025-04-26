@@ -1,0 +1,63 @@
+import streamlit as st
+import mysql.connector
+from config import DB_CONFIG
+
+def view_my_orders():
+    try:
+        # Connect to database
+        conn = mysql.connector.connect(
+            host=DB_CONFIG['host'],
+            port=DB_CONFIG['port'],
+            user=DB_CONFIG['user'],
+            password=DB_CONFIG['password'],
+            database=DB_CONFIG['database']
+        )
+        cursor = conn.cursor()
+        
+        # Get current user
+        user = st.session_state.get("user")
+        if not user:
+            st.error("Please login to view your orders")
+            return
+            
+        # Get user's orders
+        cursor.execute("""
+            SELECT o.id, o.total, o.status, o.created_at
+            FROM orders o
+            WHERE o.user_id = %s
+            ORDER BY o.created_at DESC
+        """, (user["id"],))
+        
+        orders = cursor.fetchall()
+        
+        if not orders:
+            st.info("You have no orders yet.")
+            return
+            
+        # Display orders
+        for order_id, total, status, created_at in orders:
+            with st.expander(f"Order #{order_id} - {created_at.strftime('%Y-%m-%d %H:%M:%S')}"):
+                st.write(f"Total: ₹{total:.2f}")
+                st.write(f"Status: {status}")
+                
+                # Get order items
+                cursor.execute("""
+                    SELECT m.name, oi.quantity, oi.price_at_time
+                    FROM order_items oi
+                    JOIN menu_items m ON oi.menu_item_id = m.id
+                    WHERE oi.order_id = %s
+                """, (order_id,))
+                
+                items = cursor.fetchall()
+                for name, quantity, price in items:
+                    st.write(f"- {name} x {quantity} @ ₹{price:.2f}")
+        
+    except mysql.connector.Error as e:
+        st.error(f"Database error: {e}")
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close() 

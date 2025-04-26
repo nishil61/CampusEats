@@ -4,10 +4,8 @@ import mysql.connector
 from datetime import datetime
 import json
 import os
-
-# Get Razorpay credentials from environment variables
-RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID', 'rzp_test_Y8mpoQXD52pv3L')
-RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET', 'Aj2MgIxIaYHpnyq8JHH83ToG')
+from config import DB_CONFIG, RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET
+import time
 
 # Initialize Razorpay client
 try:
@@ -51,21 +49,16 @@ def verify_payment(payment_id, order_id):
         
         if payment['status'] == 'captured':
             # Update order status in database
-            conn = mysql.connector.connect(
-                host="localhost",
-                user="root",
-                password="",
-                database="canteen1"
-            )
-            cursor = conn.cursor()
+            conn = mysql.connector.connect(**DB_CONFIG)
+            db_executor = conn.cursor()
             
-            cursor.execute(
+            db_executor.execute(
                 "UPDATE orders SET status = 'completed' WHERE id = %s",
                 (order_id,)
             )
             
             conn.commit()
-            cursor.close()
+            db_executor.close()
             conn.close()
             
             return True
@@ -81,33 +74,31 @@ def verify_payment(payment_id, order_id):
 def initiate_payment(amount, order_id):
     try:
         # Connect to database
-        conn = mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="",
-            database="canteen1"
-        )
-        cursor = conn.cursor()
+        conn = mysql.connector.connect(**DB_CONFIG)
+        db_executor = conn.cursor()
         
         # Get client details
-        cursor.execute("""
+        db_executor.execute("""
             SELECT u.name, u.email, u.role
             FROM users u
             JOIN orders o ON u.id = o.user_id
             WHERE o.id = %s
         """, (order_id,))
         
-        client_details = cursor.fetchone()
+        client_details = db_executor.fetchone()
         if not client_details:
             st.error("Client details not found")
             return None
-        
+            
         # Create Razorpay order
         data = {
             "amount": int(amount * 100),  # Convert to paise
             "currency": "INR",
             "receipt": f"order_{order_id}",
-            "payment_capture": 1
+            "payment_capture": 1,
+            "notes": {
+                "order_id": str(order_id)
+            }
         }
         
         order = client.order.create(data=data)
@@ -115,20 +106,21 @@ def initiate_payment(amount, order_id):
             return None
         
         # Get order items for invoice
-        cursor.execute("""
-            SELECT m.name, oi.quantity, oi.price_at_time
+        db_executor.execute("""
+            SELECT m.name, oi.quantity, oi.price_at_time, v.name as vendor_name
             FROM order_items oi
             JOIN menu_items m ON oi.menu_item_id = m.id
+            JOIN vendors v ON m.vendor_id = v.id
             WHERE oi.order_id = %s
         """, (order_id,))
         
-        order_items = cursor.fetchall()
+        order_items = db_executor.fetchall()
         
         # Prepare line items for invoice
         line_items = []
         for item in order_items:
             line_items.append({
-                "name": item[0],
+                "name": f"{item[0]} (from {item[3]})",  # Include vendor name in item name
                 "quantity": item[1],
                 "amount": int(item[2] * 100),  # Convert to paise
                 "currency": "INR"
@@ -137,60 +129,42 @@ def initiate_payment(amount, order_id):
         # Create invoice
         invoice_data = {
             "type": "invoice",
-            "description": f"Order #{order_id}",
+            "description": f"Invoice for Order #{order_id}",
             "customer": {
-                "name": client_details[0],  # client name
-                "email": client_details[1],  # client email
-                "contact": client_details[2]  # client role
+                "name": client_details[0],
+                "email": client_details[1],
             },
             "line_items": line_items,
-            "sms_notify": 1,
-            "email_notify": 1,
-            "currency": "INR",
             "notes": {
-                "order_id": str(order_id),
-                "customer_name": client_details[0],
-                "customer_role": client_details[2],
-                "order_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "payment_status": "Paid",
-                "amount_paid": f"₹{amount:.2f}"
-            }
+                "order_id": str(order_id)
+            },
+            "currency": "INR"
         }
         
-        invoice = client.invoice.create(data=invoice_data)
-        
-        # Create payment button with success popup and invoice download
-        st.markdown(f"""
-        <script>
-        function showSuccessPopup() {{
-            alert('Order placed successfully! You will be redirected to payment page.');
-        }}
-        </script>
-        
-        <form action="https://api.razorpay.com/v1/checkout/embedded" method="POST" onsubmit="showSuccessPopup()">
-            <input type="hidden" name="key_id" value="{RAZORPAY_KEY_ID}">
-            <input type="hidden" name="order_id" value="{order['id']}">
-            <input type="hidden" name="name" value="Canteen Order">
-            <input type="hidden" name="description" value="Order #{order_id}">
-            <input type="hidden" name="amount" value="{amount * 100}">
-            <input type="hidden" name="currency" value="INR">
-            <input type="hidden" name="prefill[name]" value="{client_details[0]}">
-            <input type="hidden" name="prefill[email]" value="{client_details[1]}">
-            <input type="hidden" name="theme[color]" value="#F37254">
-            <button type="submit" style="background-color: #F37254; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">
-                Pay Now
-            </button>
-        </form>
-        
-        <div style="margin-top: 20px;">
-            <a href="{invoice['short_url']}" target="_blank" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-                Download Invoice
-            </a>
-        </div>
-        """, unsafe_allow_html=True)
+        # Try to create the invoice
+        try:
+            invoice = client.invoice.create(data=invoice_data)
+            
+            # Store the invoice URL in session state so we can access it later
+            if 'invoices' not in st.session_state:
+                st.session_state.invoices = {}
+            
+            st.session_state.invoices[str(order_id)] = invoice['short_url']
+            
+        except Exception as e:
+            st.error(f"Error creating invoice: {str(e)}")
+            return order['id']  # Return order ID even if invoice creation fails
         
         # Show success message
         st.success("🎉 Payment initiated successfully! Please complete the payment to confirm your order.")
+        
+        # Display single Pay Now button
+        try:
+            invoice_url = invoice['short_url']
+            st.markdown(f'<a href="{invoice_url}" target="_blank"><button style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; font-weight: bold;">Pay Now</button></a>', unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"Error displaying payment button: {str(e)}")
+        
         st.balloons()
         st.snow()
         
@@ -200,5 +174,12 @@ def initiate_payment(amount, order_id):
         st.error(f"Invalid payment request: {str(e)}")
         return None
     except Exception as e:
-        st.error(f"Error initiating payment: {e}")
-        return None 
+        st.error(f"Error initiating payment: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+        return None
+    finally:
+        if 'db_executor' in locals():
+            db_executor.close()
+        if 'conn' in locals():
+            conn.close() 
