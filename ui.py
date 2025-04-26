@@ -85,7 +85,7 @@ def vendor_ui():
     
     # Get vendor's name from email
     vendor_emails = {
-        "feefafoo@campuseats.com": "FEE FA FOO",
+        "feefafoo@campuseats.com": "Fee Fa Foo",
         "mechcafe@campuseats.com": "Mech Cafe",
         "poornima@campuseats.com": "Poornima Kitchen",
         "nescafe@campuseats.com": "Nescafe"
