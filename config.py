@@ -6,10 +6,10 @@ load_dotenv()
 
 # Database configuration
 DB_CONFIG = {
-    'host': 'yamanote.proxy.rlwy.net',
-    'port': 29875,
+    'host': 'mainline.proxy.rlwy.net',
+    'port': 17254,
     'user': 'root',
-    'password': 'wiaXvrQhIYMCCaylHdAvUIiyZPYESAoB',
+    'password': 'dCPjCVlAHJUJdmrVHfDhOZlBMqKKpysk',
     'database': 'railway'
 }
 
