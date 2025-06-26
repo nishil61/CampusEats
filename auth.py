@@ -12,7 +12,7 @@ def validate_vendor_email(email):
     vendor_emails = {
         "feefafoo@campuseats.com": "Fee Fa Foo",
         "mechcafe@campuseats.com": "Mech Cafe",
-        "poornima@campuseats.com": "Poornima",
+        "poornima@campuseats.com": "Poornima Kitchen",
         "nescafe@campuseats.com": "Nescafe"
     }
     return email in vendor_emails, vendor_emails.get(email)

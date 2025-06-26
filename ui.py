@@ -1045,7 +1045,7 @@ def admin_ui():
                 JOIN menu_items m ON v.id = m.vendor_id
                 JOIN order_items oi ON m.id = oi.menu_item_id
                 JOIN orders o ON oi.order_id = o.id
-                WHERE o.created_at BETWEEN %s AND %s
+                WHERE DATE(o.created_at) BETWEEN %s AND %s
                 GROUP BY v.id, v.name
                 ORDER BY total_revenue DESC
             """, (start_date, end_date))
@@ -1088,7 +1088,7 @@ def admin_ui():
                     JOIN order_items oi ON o.id = oi.order_id
                     JOIN menu_items m ON oi.menu_item_id = m.id
                     JOIN vendors v ON m.vendor_id = v.id
-                    WHERE o.created_at BETWEEN %s AND %s
+                    WHERE DATE(o.created_at) BETWEEN %s AND %s
                     GROUP BY DATE(o.created_at), v.name
                     ORDER BY order_date, v.name
                 """, (start_date, end_date))
@@ -1130,7 +1130,8 @@ def admin_ui():
                         align-items: center; 
                         justify-content: center;
                         font-weight: bold;
-                        font-size: 14px;'>
+                        font-size: 14px;
+                        '>
                         Revenue (₹)
                         </div>
                         """, unsafe_allow_html=True)
@@ -1141,7 +1142,8 @@ def admin_ui():
                         <div style='text-align: center; 
                         margin-bottom: 10px;
                         font-weight: bold;
-                        font-size: 14px;'>
+                        font-size: 14px;
+                        '>
                         Date
                         </div>
                         """, unsafe_allow_html=True)
